@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from "react";
 import { motion } from "framer-motion";
 import { Send, Heart, AlertCircle, ExternalLink } from "lucide-react";
-import { streamChat, fetchCrisisResources } from "../services/aiServices";
+import { streamChat, fetchCrisisResources, localeHint } from "../services/aiServices";
 import type { ChatMessage, CrisisResource } from "@shared/protocol";
 
 interface Message {
@@ -40,7 +40,7 @@ const Chat = () => {
   // be hardcoded US shortcodes, which connect to nothing outside the US.
   useEffect(() => {
     let cancelled = false;
-    fetchCrisisResources(navigator.language).then((list) => {
+    fetchCrisisResources(localeHint()).then((list) => {
       if (!cancelled) setResources(list);
     });
     return () => {
@@ -85,7 +85,7 @@ const Chat = () => {
     controllerRef.current = new AbortController();
 
     await streamChat(
-      { messages: history, locale: navigator.language },
+      { messages: history, locale: localeHint() },
       {
         onDelta: (text) => {
           reply += text;

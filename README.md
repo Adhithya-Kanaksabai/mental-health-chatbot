@@ -139,11 +139,28 @@ previously meant every user worldwide was shown US-only shortcodes that connect 
 nothing abroad.
 
 Currently covered: **IN** (Tele-MANAS, 14416) and **US** (988, Crisis Text Line
-741741). Every other locale falls back to
+741741). Every other region falls back to
 [findahelpline.com](https://findahelpline.com) rather than inventing a number.
 
+### Why region is resolved from the time zone
+
+Resolution order is **time zone → language → international directory**, and that
+order matters.
+
+The obvious approach is `navigator.language`, but that reports the browser's *UI
+language*, not where the user is. A Windows machine in India routinely reports
+`en-US` — so a language-based lookup shows US-only numbers to an Indian user,
+which is precisely the bug this module exists to fix. `Intl.DateTimeFormat()
+.resolvedOptions().timeZone` reports `Asia/Calcutta`, which is unambiguous.
+
+Note that the map includes both `Asia/Kolkata` and the legacy `Asia/Calcutta`
+alias: Chrome on Windows still reports the latter, and omitting it would
+silently miss India.
+
 Each entry stores its official source URL. **Re-verify against that URL before
-every release** — a stale helpline number is worse than none.
+every release** — a stale helpline number is worse than none. The
+`/resources` page shows a source link and the operating hours next to every
+number, including where a line is *not* 24/7.
 
 Last verified: 2026-09-12.
 

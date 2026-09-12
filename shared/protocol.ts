@@ -28,12 +28,25 @@ export interface ChatMessage {
   content: string;
 }
 
+/**
+ * Signals used to pick region-appropriate crisis resources.
+ *
+ * timeZone is the stronger signal and is preferred: navigator.language reports
+ * the browser's UI language, not the user's location - a machine in India
+ * routinely reports "en-US".
+ */
+export interface LocaleHint {
+  /** IANA zone from Intl.DateTimeFormat().resolvedOptions().timeZone. */
+  timeZone?: string;
+  /** navigator.languages, most-preferred first. */
+  languages?: string[];
+}
+
 export interface ChatRequest {
   messages: ChatMessage[];
   /** Omitted means "server default". Becomes a real choice in Phase 1. */
   model?: string;
-  /** BCP-47-ish locale used to pick crisis resources, e.g. "en-IN". */
-  locale?: string;
+  locale?: LocaleHint;
 }
 
 export type StreamEvent =

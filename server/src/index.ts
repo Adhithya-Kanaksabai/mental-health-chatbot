@@ -10,7 +10,7 @@ import {
   encodeEvent,
 } from "../../shared/protocol";
 import type { ChatRequest, StreamEvent } from "../../shared/protocol";
-import { resourcesForLocale } from "./safety/resources";
+import { resourcesFor, regionFor } from "./safety/resources";
 
 dotenv.config();
 
@@ -37,14 +37,68 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: "1mb" }));
 
+// Visiting the API port in a browser should explain itself rather than show
+// Express's bare "Cannot GET /".
+app.get("/", (_req, res) => {
+  res.json({
+    service: "mental-health-chatbot API",
+    note: "This is the backend. The app itself runs at the ui URL below.",
+    ui: APP_URL,
+    endpoints: [
+      "GET  /api/health",
+      "GET  /api/crisis-resources?locale=en-IN",
+      "POST /api/chat",
+    ],
+  });
+});
+
 app.get("/api/health", (_req, res) => {
   res.json({ ok: true, defaultModel: DEFAULT_MODEL });
 });
 
 app.get("/api/crisis-resources", (req, res) => {
-  const locale = typeof req.query.locale === "string" ? req.query.locale : undefined;
-  res.json({ resources: resourcesForLocale(locale) });
+  const hint = {
+    timeZone: typeof req.query.timeZone === "string" ? req.query.timeZone : undefined,
+    languages:
+      typeof req.query.languages === "string"
+        ? req.query.languages.split(",").filter(Boolean)
+        : undefined,
+  };
+  res.json({ region: regionFor(hint), resources: resourcesFor(hint) });
 });
+
+/**
+ * Turn an upstream HTTP status into something the reader can act on. "Upstream
+ * error (401)" tells nobody what to do; naming the likely cause does.
+ */
+function describeUpstream(status: number): { message: string; retryable: boolean } {
+  if (status === 401 || status === 403) {
+    return {
+      message:
+        "The AI provider rejected the API key. Check OPENROUTER_API_KEY in server/.env - it may be expired or revoked.",
+      retryable: false,
+    };
+  }
+  if (status === 402) {
+    return {
+      message: "The AI provider reports no remaining credit on this account.",
+      retryable: false,
+    };
+  }
+  if (status === 404) {
+    return {
+      message: "The AI provider does not recognise the configured model name.",
+      retryable: false,
+    };
+  }
+  if (status === 429) {
+    return { message: "Rate limited by the AI provider. Try again shortly.", retryable: true };
+  }
+  if (status >= 500) {
+    return { message: "The AI provider is having trouble. Try again shortly.", retryable: true };
+  }
+  return { message: `The AI provider returned an unexpected error (${status}).`, retryable: false };
+}
 
 app.post("/api/chat", async (req: Request, res: Response) => {
   const { messages, model, locale } = req.body as ChatRequest;
@@ -107,11 +161,8 @@ app.post("/api/chat", async (req: Request, res: Response) => {
     if (!response.ok || !response.body) {
       const detail = await response.text().catch(() => "");
       console.error(`[${requestId}] upstream ${response.status}: ${detail}`);
-      send({
-        type: "error",
-        message: `Upstream error (${response.status}).`,
-        retryable: response.status >= 500 || response.status === 429,
-      });
+      const described = describeUpstream(response.status);
+      send({ type: "error", ...described });
       send({ type: "done" });
       res.end();
       return;
@@ -188,6 +239,10 @@ app.post("/api/chat", async (req: Request, res: Response) => {
       res.end();
     }
   }
+});
+
+app.use((req, res) => {
+  res.status(404).json({ error: `No route ${req.method} ${req.path}` });
 });
 
 app.listen(PORT, () => {

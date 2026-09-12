@@ -1,4 +1,4 @@
-import type { CrisisResource } from "../../../shared/protocol";
+import type { CrisisResource, LocaleHint } from "../../../shared/protocol";
 
 /**
  * Crisis resources, keyed by region.
@@ -57,22 +57,91 @@ const INTERNATIONAL: CrisisResource[] = [
   },
 ];
 
-const BY_REGION: Record<string, CrisisResource[]> = {
-  IN,
-  US,
-};
+const BY_REGION: Record<string, CrisisResource[]> = { IN, US };
 
 /**
- * Resolve resources for a BCP-47-ish locale ("en-IN" -> IN). Falls back to the
- * international directory rather than defaulting to any single country.
+ * IANA time zone -> country, for the regions we actually cover.
+ *
+ * Time zone beats language for this decision. navigator.language reports the
+ * browser's UI language, not where the user is: a machine in India very
+ * commonly reports "en-US", which would otherwise show US-only numbers to an
+ * Indian user - the exact bug this module exists to fix.
+ *
+ * Note both "Asia/Kolkata" and the legacy "Asia/Calcutta" alias: Chrome on
+ * Windows still reports the latter, so omitting it would silently miss India.
+ *
+ * Extend this map whenever a region is added to BY_REGION.
  */
-export function resourcesForLocale(locale?: string): CrisisResource[] {
-  if (!locale) return INTERNATIONAL;
+const TIMEZONE_TO_REGION: Record<string, string> = {
+  "Asia/Kolkata": "IN",
+  "Asia/Calcutta": "IN",
 
-  const region = locale.split("-")[1]?.toUpperCase();
-  if (!region) return INTERNATIONAL;
+  "America/New_York": "US",
+  "America/Detroit": "US",
+  "America/Chicago": "US",
+  "America/Menominee": "US",
+  "America/Denver": "US",
+  "America/Boise": "US",
+  "America/Phoenix": "US",
+  "America/Los_Angeles": "US",
+  "America/Anchorage": "US",
+  "America/Juneau": "US",
+  "America/Sitka": "US",
+  "America/Metlakatla": "US",
+  "America/Yakutat": "US",
+  "America/Nome": "US",
+  "America/Adak": "US",
+  "America/Indiana/Indianapolis": "US",
+  "America/Indiana/Vincennes": "US",
+  "America/Indiana/Winamac": "US",
+  "America/Indiana/Marengo": "US",
+  "America/Indiana/Petersburg": "US",
+  "America/Indiana/Vevay": "US",
+  "America/Indiana/Tell_City": "US",
+  "America/Indiana/Knox": "US",
+  "America/Kentucky/Louisville": "US",
+  "America/Kentucky/Monticello": "US",
+  "America/North_Dakota/Center": "US",
+  "America/North_Dakota/New_Salem": "US",
+  "America/North_Dakota/Beulah": "US",
+  "Pacific/Honolulu": "US",
+};
 
-  return BY_REGION[region] ?? INTERNATIONAL;
+/** First region subtag found across the accept-language style list. */
+function regionFromLanguages(languages?: string[]): string | null {
+  if (!languages) return null;
+
+  for (const tag of languages) {
+    const region = tag.split("-")[1];
+    if (region && BY_REGION[region.toUpperCase()]) {
+      return region.toUpperCase();
+    }
+  }
+  return null;
+}
+
+/**
+ * Resolve crisis resources for a viewer.
+ *
+ * Precedence is deliberate: physical location (time zone) first, stated
+ * language second, international directory last. We never guess a number for
+ * a region we have not verified.
+ */
+export function resourcesFor(hint: LocaleHint): CrisisResource[] {
+  const byZone = hint.timeZone ? TIMEZONE_TO_REGION[hint.timeZone] : undefined;
+  if (byZone && BY_REGION[byZone]) return BY_REGION[byZone];
+
+  const byLang = regionFromLanguages(hint.languages);
+  if (byLang) return BY_REGION[byLang];
+
+  return INTERNATIONAL;
+}
+
+/** Which region a hint resolved to, for logging and tests. */
+export function regionFor(hint: LocaleHint): string {
+  const byZone = hint.timeZone ? TIMEZONE_TO_REGION[hint.timeZone] : undefined;
+  if (byZone && BY_REGION[byZone]) return byZone;
+  return regionFromLanguages(hint.languages) ?? "INTL";
 }
 
 export { INTERNATIONAL as internationalResources };

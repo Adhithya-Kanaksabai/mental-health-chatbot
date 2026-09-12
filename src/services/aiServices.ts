@@ -2,6 +2,7 @@ import { createSSEParser, dataFromFrame } from "@shared/protocol";
 import type {
   ChatRequest,
   CrisisResource,
+  LocaleHint,
   RiskLevel,
   StreamEvent,
 } from "@shared/protocol";
@@ -104,18 +105,56 @@ export async function streamChat(
   }
 }
 
+/**
+ * What this browser can tell us about where the user is.
+ *
+ * Time zone is listed first because it is the reliable signal: navigator
+ * .language is the UI language, and a machine in India commonly reports
+ * "en-US", which would show US-only crisis numbers to an Indian user.
+ */
+export function localeHint(): LocaleHint {
+  let timeZone: string | undefined;
+  try {
+    timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  } catch {
+    timeZone = undefined;
+  }
+
+  return {
+    timeZone,
+    languages: navigator.languages
+      ? Array.from(navigator.languages)
+      : [navigator.language],
+  };
+}
+
+export interface CrisisContext {
+  /** "IN", "US", or "INTL" when nothing matched. */
+  region: string;
+  resources: CrisisResource[];
+}
+
+/** Crisis resources plus the region they were resolved for. */
+export async function fetchCrisisContext(
+  hint: LocaleHint
+): Promise<CrisisContext> {
+  try {
+    const params = new URLSearchParams();
+    if (hint.timeZone) params.set("timeZone", hint.timeZone);
+    if (hint.languages?.length) params.set("languages", hint.languages.join(","));
+
+    const response = await fetch(`${API_BASE}/api/crisis-resources?${params}`);
+    if (!response.ok) return { region: "INTL", resources: [] };
+    const body = (await response.json()) as CrisisContext;
+    return { region: body.region ?? "INTL", resources: body.resources ?? [] };
+  } catch {
+    return { region: "INTL", resources: [] };
+  }
+}
+
 /** Crisis resources for the viewer's region, resolved server-side. */
 export async function fetchCrisisResources(
-  locale: string
+  hint: LocaleHint
 ): Promise<CrisisResource[]> {
-  try {
-    const response = await fetch(
-      `${API_BASE}/api/crisis-resources?locale=${encodeURIComponent(locale)}`
-    );
-    if (!response.ok) return [];
-    const body = (await response.json()) as { resources: CrisisResource[] };
-    return body.resources ?? [];
-  } catch {
-    return [];
-  }
+  return (await fetchCrisisContext(hint)).resources;
 }

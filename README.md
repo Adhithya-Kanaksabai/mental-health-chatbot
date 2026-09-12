@@ -75,16 +75,17 @@ across a network boundary was dropped.
 **Prerequisites:** Node.js 18+ (developed on 22), and an
 [OpenRouter](https://openrouter.ai) API key.
 
-### 1. Backend
+### 1. Install both halves
+
+From the repository root:
 
 ```bash
-cd server
-npm install
-cp .env.example .env    # then put your real key in .env
-npm run dev
+npm run setup
 ```
 
-`server/.env`:
+### 2. Add your API key
+
+Copy `server/.env.example` to `server/.env` and fill in your key:
 
 ```bash
 OPENROUTER_API_KEY=your_openrouter_api_key_here
@@ -95,19 +96,38 @@ OPENROUTER_API_KEY=your_openrouter_api_key_here
 # OPENROUTER_URL=...        # point at a local OpenAI-compatible server
 ```
 
-The server refuses to start without an API key rather than failing later at
-request time.
+The server refuses to start without a key rather than failing later at request
+time.
 
-### 2. Frontend
-
-In a second terminal, from the repository root:
+### 3. Run
 
 ```bash
-npm install
 npm run dev
 ```
 
+This starts the Vite frontend and the Express backend together, with their
+output labelled `web` and `api`. If either exits, the other is stopped too.
 Then open http://localhost:5173.
+
+To run just one half: `npm run dev:web` or `npm run dev:api`.
+
+### Scripts
+
+| Command | Does |
+|---|---|
+| `npm run setup` | Install dependencies for both the root and `server/` |
+| `npm run dev` | Run frontend and backend together |
+| `npm run dev:web` / `dev:api` | Run one half on its own |
+| `npm run build` | Typecheck and build the frontend |
+| `npm run build:api` | Compile the server to `server/dist/` |
+
+### A note on module systems
+
+The repo root sets `"type": "module"` for Vite, while the server compiles to
+CommonJS. `shared/` sits between them, so it carries its own
+`shared/package.json` pinning it to CommonJS — without it, `ts-node-dev` cannot
+`require()` the shared protocol and `npm run dev:api` fails at startup. The
+compiled path is unaffected, which is exactly why this only shows up in dev.
 
 ---
 

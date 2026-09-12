@@ -1,0 +1,4 @@
+{
+  "//": "Scopes shared/ to CommonJS. The repo root sets \"type\": \"module\" for the Vite frontend, which shared/ would otherwise inherit — and the server compiles to CommonJS, so ts-node-dev cannot require() an ES module. Vite transpiles these .ts files itself and is unaffected.",
+  "type": "commonjs"
+}

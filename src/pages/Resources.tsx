@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import { useState } from 'react'
 import { motion } from 'framer-motion'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '../components/ui/tabs'
 import { Phone, MessageCircle, Globe, Book, Users, AlertTriangle, ExternalLink, Heart } from 'lucide-react'

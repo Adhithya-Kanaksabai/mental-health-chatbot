@@ -1,2 +1,10 @@
 /// <reference types="vite/client" />
-import.meta.env.VITE_OPENAI_API_KEY;
+
+interface ImportMetaEnv {
+  /** Base URL of the Express API. Defaults to http://localhost:5000. */
+  readonly VITE_API_BASE?: string
+}
+
+interface ImportMeta {
+  readonly env: ImportMetaEnv
+}

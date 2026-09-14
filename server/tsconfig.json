@@ -1,13 +1,17 @@
 {
   "compilerOptions": {
-    "target": "ES2020",
+    "target": "ES2022",
     "module": "commonjs",
+    "moduleResolution": "node",
+    "lib": ["ES2022"],
     "outDir": "dist",
-    "rootDir": ".", // root is the server folder
+    // ".." so the shared protocol (outside server/) is part of the program.
+    "rootDir": "..",
     "strict": true,
     "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
     "skipLibCheck": true
   },
-  "include": ["index.ts"],  // or ["*.ts"]
+  "include": ["src/**/*.ts", "../shared/**/*.ts"],
   "exclude": ["node_modules", "dist"]
 }

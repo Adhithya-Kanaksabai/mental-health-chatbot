@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react'
+import { useState, useEffect } from 'react'
 import { motion } from 'framer-motion'
 import { PenTool, Calendar, Trash2, Plus, BookOpen } from 'lucide-react'
 

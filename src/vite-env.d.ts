@@ -1,2 +1,10 @@
 /// <reference types="vite/client" />
-import.meta.env.VITE_OPENAI_API_KEY;
+
+interface ImportMetaEnv {
+  /** Origin of a separately hosted API. Unset in dev: /api is proxied to Express by Vite. */
+  readonly VITE_API_BASE?: string
+}
+
+interface ImportMeta {
+  readonly env: ImportMetaEnv
+}

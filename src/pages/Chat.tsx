@@ -1,14 +1,43 @@
 import React, { useState, useRef, useEffect } from "react";
 import { motion } from "framer-motion";
-import { Send, Heart, AlertCircle } from "lucide-react";
-import { streamAIReply } from "../services/aiServices";
+import { Send, Heart, AlertCircle, ExternalLink } from "lucide-react";
+import { streamChat, fetchCrisisResources, localeHint } from "../services/aiServices";
+import type { ChatMessage, CrisisResource } from "@shared/protocol";
+import ReactMarkdown from "react-markdown";
+import type { Components } from "react-markdown";
 
 interface Message {
   id: string;
   text: string;
   role: "user" | "assistant";
   timestamp: Date;
+  isError?: boolean;
 }
+
+const SYSTEM_PROMPT =
+  "You are a kind, empathetic mental health support assistant. Always respond with warmth, emotional intelligence, and evidence-based mental wellness techniques. Never give medical advice or diagnoses.";
+
+// Models answer in markdown. Rendered compactly for a chat bubble: headings
+// become bold lines rather than page-sized titles. react-markdown does not render
+// raw HTML and neutralises unsafe link protocols, so model output cannot inject
+// markup into the page.
+const markdownComponents: Components = {
+  p: ({ children }) => <p className="mb-2 last:mb-0">{children}</p>,
+  ul: ({ children }) => <ul className="list-disc pl-5 mb-2 last:mb-0 space-y-1">{children}</ul>,
+  ol: ({ children }) => <ol className="list-decimal pl-5 mb-2 last:mb-0 space-y-1">{children}</ol>,
+  li: ({ children }) => <li>{children}</li>,
+  strong: ({ children }) => <strong className="font-semibold">{children}</strong>,
+  h1: ({ children }) => <p className="font-semibold mt-2 mb-1">{children}</p>,
+  h2: ({ children }) => <p className="font-semibold mt-2 mb-1">{children}</p>,
+  h3: ({ children }) => <p className="font-semibold mt-2 mb-1">{children}</p>,
+  h4: ({ children }) => <p className="font-semibold mt-2 mb-1">{children}</p>,
+  a: ({ href, children }) => (
+    <a href={href} target="_blank" rel="noreferrer" className="underline">
+      {children}
+    </a>
+  ),
+  code: ({ children }) => <code className="bg-gray-200 rounded px-1">{children}</code>,
+};
 
 const Chat = () => {
   const [messages, setMessages] = useState<Message[]>([
@@ -23,15 +52,32 @@ const Chat = () => {
 
   const [inputText, setInputText] = useState("");
   const [isTyping, setIsTyping] = useState(false);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const [resources, setResources] = useState<CrisisResource[]>([]);
+  const scrollRef = useRef<HTMLDivElement>(null);
   const controllerRef = useRef<AbortController | null>(null);
 
+  // Scroll only the message list. scrollIntoView also scrolls every ancestor,
+  // including the window, so each streamed token jolted the whole page and
+  // pushed the crisis banner under the header.
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    const el = scrollRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
   }, [messages]);
 
+  // Crisis numbers are region-specific and resolved server-side. They used to
+  // be hardcoded US shortcodes, which connect to nothing outside the US.
+  useEffect(() => {
+    let cancelled = false;
+    fetchCrisisResources(localeHint()).then((list) => {
+      if (!cancelled) setResources(list);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const handleSendMessage = async () => {
-    if (!inputText.trim()) return;
+    if (!inputText.trim() || isTyping) return;
 
     const userMessage: Message = {
       id: Date.now().toString(),
@@ -45,63 +91,56 @@ const Chat = () => {
     setInputText("");
     setIsTyping(true);
 
-    let aiResponse = "";
-    const aiMessage: Message = {
-      id: (Date.now() + 1).toString(),
-      text: "",
-      role: "assistant",
-      timestamp: new Date(),
-    };
+    const aiMessageId = (Date.now() + 1).toString();
+    setMessages((prev) => [
+      ...prev,
+      { id: aiMessageId, text: "", role: "assistant", timestamp: new Date() },
+    ]);
 
-    setMessages((prev) => [...prev, aiMessage]);
-
-    const chatHistory = [
-      {
-        role: "system",
-        content:
-          "You are a kind, empathetic mental health support assistant. Always respond with warmth, emotional intelligence, and evidence-based mental wellness techniques. Never give medical advice or diagnoses.",
-      },
-      ...updatedMessages.map((msg) => ({
-        role: msg.role,
-        content: msg.text,
-      })),
+    const history: ChatMessage[] = [
+      { role: "system", content: SYSTEM_PROMPT },
+      ...updatedMessages
+        .filter((m) => !m.isError)
+        .map((m) => ({ role: m.role, content: m.text })),
     ];
 
+    const patch = (fields: Partial<Message>) =>
+      setMessages((prev) =>
+        prev.map((m) => (m.id === aiMessageId ? { ...m, ...fields } : m))
+      );
+
+    let reply = "";
     controllerRef.current = new AbortController();
 
-    try {
-      await streamAIReply(
-        chatHistory,
-        (token) => {
-          aiResponse += token;
-          setMessages((prev) =>
-            prev.map((m) =>
-              m.id === aiMessage.id ? { ...m, text: aiResponse } : m
-            )
-          );
+    await streamChat(
+      { messages: history, locale: localeHint() },
+      {
+        onDelta: (text) => {
+          reply += text;
+          patch({ text: reply });
         },
-        () => {
+        onError: (message) => {
+          // Keep any answer text that already arrived; a provider can fail
+          // part-way through a reply.
+          patch({
+            text: reply ? `${reply}\n\n⚠️ ${message}` : `⚠️ ${message}`,
+            isError: true,
+          });
+        },
+        onDone: () => {
+          // An empty reply with no error shouldn't leave a blank bubble behind.
+          setMessages((prev) =>
+            prev.filter((m) => m.id !== aiMessageId || m.text.length > 0)
+          );
           setIsTyping(false);
           controllerRef.current = null;
         },
-        controllerRef.current.signal
-      );
-    } catch (error) {
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: (Date.now() + 2).toString(),
-          text: "⚠️ I'm having trouble responding right now. Please try again shortly.",
-          role: "assistant",
-          timestamp: new Date(),
-        },
-      ]);
-      setIsTyping(false);
-      controllerRef.current = null;
-    }
+      },
+      controllerRef.current.signal
+    );
   };
 
-  const handleKeyPress = (e: React.KeyboardEvent) => {
+  const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       handleSendMessage();
@@ -139,9 +178,43 @@ const Chat = () => {
         >
           <AlertCircle className="h-5 w-5 text-red-500 mt-0.5 flex-shrink-0" />
           <div className="text-sm text-red-700">
-            <strong>Crisis Support:</strong> If you're having thoughts of
-            self-harm, please call 988 (Suicide & Crisis Lifeline) or text HOME
-            to 741741 immediately.
+            <strong>Crisis Support:</strong>{" "}
+            {resources.length > 0 ? (
+              <>
+                If you are having thoughts of self-harm, please reach out now:
+                <ul className="mt-2 space-y-1">
+                  {resources.map((r) => (
+                    <li key={r.name}>
+                      <span className="font-semibold">
+                        {r.method === "text" ? "Text " : ""}
+                        {r.contact}
+                      </span>{" "}
+                      &mdash; {r.name}
+                      {r.detail ? (
+                        <span className="text-red-600"> ({r.detail})</span>
+                      ) : null}
+                      {r.url ? (
+                        <a
+                          href={r.url}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="inline-flex items-center ml-1 underline"
+                          aria-label={`Official page for ${r.name}`}
+                        >
+                          <ExternalLink className="h-3 w-3" />
+                        </a>
+                      ) : null}
+                    </li>
+                  ))}
+                </ul>
+              </>
+            ) : (
+              <>
+                If you are having thoughts of self-harm, please contact your
+                local emergency services, or find a verified crisis line for
+                your country at findahelpline.com.
+              </>
+            )}
           </div>
         </motion.div>
 
@@ -153,7 +226,7 @@ const Chat = () => {
           className="bg-white rounded-2xl shadow-xl border border-gray-100 overflow-hidden"
         >
           {/* Messages */}
-          <div className="h-96 overflow-y-auto p-6 space-y-4">
+          <div ref={scrollRef} className="h-96 overflow-y-auto p-6 space-y-4">
             {messages.map((message) => (
               <div
                 key={message.id}
@@ -165,12 +238,22 @@ const Chat = () => {
                   className={`max-w-xs lg:max-w-md px-4 py-3 rounded-2xl ${
                     message.role === "user"
                       ? "bg-primary-600 text-white"
+                      : message.isError
+                      ? "bg-red-50 text-red-700 border border-red-200"
                       : "bg-gray-100 text-gray-800"
                   }`}
                 >
-                  <p className="text-sm leading-relaxed whitespace-pre-line">
-                    {message.text}
-                  </p>
+                  {message.role === "assistant" && !message.isError ? (
+                    <div className="text-sm leading-relaxed">
+                      <ReactMarkdown components={markdownComponents}>
+                        {message.text}
+                      </ReactMarkdown>
+                    </div>
+                  ) : (
+                    <p className="text-sm leading-relaxed whitespace-pre-line">
+                      {message.text}
+                    </p>
+                  )}
                   <p
                     className={`text-xs mt-2 ${
                       message.role === "user"
@@ -204,7 +287,6 @@ const Chat = () => {
                 </div>
               </div>
             )}
-            <div ref={messagesEndRef} />
           </div>
 
           {/* Input */}
@@ -213,7 +295,7 @@ const Chat = () => {
               <textarea
                 value={inputText}
                 onChange={(e) => setInputText(e.target.value)}
-                onKeyPress={handleKeyPress}
+                onKeyDown={handleKeyDown}
                 placeholder="Share what's on your mind..."
                 className="flex-1 resize-none border border-gray-200 rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
                 rows={2}

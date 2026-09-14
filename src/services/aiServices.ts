@@ -1,63 +1,194 @@
-export const streamAIReply = async (
-  messages: any[],
-  onToken: (token: string) => void,
-  onComplete?: () => void,
-  abortSignal?: AbortSignal
-) => {
+import { createSSEParser, dataFromFrame } from "@shared/protocol";
+import type {
+  ChatRequest,
+  CrisisResource,
+  LocaleHint,
+  RiskLevel,
+  StreamEvent,
+} from "@shared/protocol";
+
+// Empty by default: requests go to /api on the page's own origin, which the Vite
+// dev server proxies to Express. Set VITE_API_BASE only to point at a separately
+// hosted API.
+const API_BASE = import.meta.env.VITE_API_BASE ?? "";
+
+const BACKEND_DOWN =
+  "The backend is not running, so the chat cannot reach the AI. Start everything with npm run dev.";
+
+/**
+ * Explain a failed response. The API always answers errors as JSON; anything
+ * else in the 5xx range is the dev proxy reporting that Express is unreachable.
+ */
+async function describeFailure(
+  response: Response
+): Promise<{ message: string; retryable: boolean }> {
+  const isJson = response.headers
+    .get("content-type")
+    ?.includes("application/json");
+
+  if (isJson) {
+    const body = (await response.json().catch(() => null)) as
+      | { error?: string }
+      | null;
+    if (body?.error) {
+      return { message: body.error, retryable: response.status >= 500 };
+    }
+  }
+
+  if (response.status >= 500) {
+    return { message: BACKEND_DOWN, retryable: true };
+  }
+
+  return {
+    message: `Unexpected response from the server (${response.status}).`,
+    retryable: false,
+  };
+}
+
+export interface StreamHandlers {
+  onMeta?: (requestId: string, model: string) => void;
+  onDelta: (text: string) => void;
+  onSafety?: (level: RiskLevel, resources?: CrisisResource[]) => void;
+  onUsage?: (usage: Extract<StreamEvent, { type: "usage" }>) => void;
+  onError?: (message: string, retryable: boolean) => void;
+  onDone?: () => void;
+}
+
+/**
+ * Stream one assistant reply.
+ *
+ * Every frame is a `StreamEvent` from the shared protocol, so the client and
+ * server cannot silently disagree about the payload shape the way they did
+ * before (the server sent OpenRouter's chunk, the client read `.token`).
+ */
+export async function streamChat(
+  request: ChatRequest,
+  handlers: StreamHandlers,
+  signal?: AbortSignal
+): Promise<void> {
   try {
-    const response = await fetch("http://localhost:5000/api/chat", {
+    const response = await fetch(`${API_BASE}/api/chat`, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ messages }),
-      signal: abortSignal,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(request),
+      signal,
     });
 
-    const reader = response.body?.getReader();
+    if (!response.ok || !response.body) {
+      const failure = await describeFailure(response);
+      handlers.onError?.(failure.message, failure.retryable);
+      handlers.onDone?.();
+      return;
+    }
+
+    const reader = response.body.getReader();
     const decoder = new TextDecoder("utf-8");
+    const parser = createSSEParser();
 
-    let done = false;
-    let buffer = "";
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
 
-    while (!done && reader) {
-      const { value, done: doneReading } = await reader.read();
-      done = doneReading;
+      // stream:true keeps multi-byte characters intact across chunk edges.
+      for (const frame of parser(decoder.decode(value, { stream: true }))) {
+        const data = dataFromFrame(frame);
+        if (data === null) continue;
 
-      const chunk = decoder.decode(value);
-      buffer += chunk;
-
-      const lines = buffer.split("\n").filter((line) => line.trim() !== "");
-
-      for (const line of lines) {
-        if (line === "data: [DONE]") {
-          onComplete?.();
-          return;
+        let event: StreamEvent;
+        try {
+          event = JSON.parse(data) as StreamEvent;
+        } catch {
+          continue;
         }
 
-        if (line.startsWith("data: ")) {
-          try {
-            const json = JSON.parse(line.replace("data: ", ""));
-            const token = json.token;
-            if (token) {
-              onToken(token);
-            }
-          } catch (err) {
-            console.error("Error parsing token JSON:", err);
-          }
+        switch (event.type) {
+          case "meta":
+            handlers.onMeta?.(event.requestId, event.model);
+            break;
+          case "delta":
+            handlers.onDelta(event.text);
+            break;
+          case "safety":
+            handlers.onSafety?.(event.level, event.resources);
+            break;
+          case "usage":
+            handlers.onUsage?.(event);
+            break;
+          case "error":
+            handlers.onError?.(event.message, event.retryable);
+            break;
+          case "done":
+            handlers.onDone?.();
+            return;
         }
       }
-
-      buffer = ""; // Clear after each batch
     }
 
-    onComplete?.();
-  } catch (error: any) {
-    if (error.name === "AbortError") {
-      console.warn("❌ Request aborted");
-    } else {
-      console.error("❌ Stream error:", error);
+    handlers.onDone?.();
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      handlers.onDone?.();
+      return;
     }
-    onComplete?.();
+
+    handlers.onError?.(
+      "Could not reach the app server. Start everything with npm run dev.",
+      true
+    );
+    handlers.onDone?.();
   }
-};
+}
+
+/**
+ * What this browser can tell us about where the user is.
+ *
+ * Time zone is listed first because it is the reliable signal: navigator
+ * .language is the UI language, and a machine in India commonly reports
+ * "en-US", which would show US-only crisis numbers to an Indian user.
+ */
+export function localeHint(): LocaleHint {
+  let timeZone: string | undefined;
+  try {
+    timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  } catch {
+    timeZone = undefined;
+  }
+
+  return {
+    timeZone,
+    languages: navigator.languages
+      ? Array.from(navigator.languages)
+      : [navigator.language],
+  };
+}
+
+export interface CrisisContext {
+  /** "IN", "US", or "INTL" when nothing matched. */
+  region: string;
+  resources: CrisisResource[];
+}
+
+/** Crisis resources plus the region they were resolved for. */
+export async function fetchCrisisContext(
+  hint: LocaleHint
+): Promise<CrisisContext> {
+  try {
+    const params = new URLSearchParams();
+    if (hint.timeZone) params.set("timeZone", hint.timeZone);
+    if (hint.languages?.length) params.set("languages", hint.languages.join(","));
+
+    const response = await fetch(`${API_BASE}/api/crisis-resources?${params}`);
+    if (!response.ok) return { region: "INTL", resources: [] };
+    const body = (await response.json()) as CrisisContext;
+    return { region: body.region ?? "INTL", resources: body.resources ?? [] };
+  } catch {
+    return { region: "INTL", resources: [] };
+  }
+}
+
+/** Crisis resources for the viewer's region, resolved server-side. */
+export async function fetchCrisisResources(
+  hint: LocaleHint
+): Promise<CrisisResource[]> {
+  return (await fetchCrisisContext(hint)).resources;
+}

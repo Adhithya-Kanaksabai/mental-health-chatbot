@@ -7,7 +7,43 @@ import type {
   StreamEvent,
 } from "@shared/protocol";
 
-const API_BASE = import.meta.env.VITE_API_BASE ?? "http://localhost:5000";
+// Empty by default: requests go to /api on the page's own origin, which the Vite
+// dev server proxies to Express. Set VITE_API_BASE only to point at a separately
+// hosted API.
+const API_BASE = import.meta.env.VITE_API_BASE ?? "";
+
+const BACKEND_DOWN =
+  "The backend is not running, so the chat cannot reach the AI. Start everything with npm run dev.";
+
+/**
+ * Explain a failed response. The API always answers errors as JSON; anything
+ * else in the 5xx range is the dev proxy reporting that Express is unreachable.
+ */
+async function describeFailure(
+  response: Response
+): Promise<{ message: string; retryable: boolean }> {
+  const isJson = response.headers
+    .get("content-type")
+    ?.includes("application/json");
+
+  if (isJson) {
+    const body = (await response.json().catch(() => null)) as
+      | { error?: string }
+      | null;
+    if (body?.error) {
+      return { message: body.error, retryable: response.status >= 500 };
+    }
+  }
+
+  if (response.status >= 500) {
+    return { message: BACKEND_DOWN, retryable: true };
+  }
+
+  return {
+    message: `Unexpected response from the server (${response.status}).`,
+    retryable: false,
+  };
+}
 
 export interface StreamHandlers {
   onMeta?: (requestId: string, model: string) => void;
@@ -39,10 +75,8 @@ export async function streamChat(
     });
 
     if (!response.ok || !response.body) {
-      handlers.onError?.(
-        `Server responded ${response.status}.`,
-        response.status >= 500
-      );
+      const failure = await describeFailure(response);
+      handlers.onError?.(failure.message, failure.retryable);
       handlers.onDone?.();
       return;
     }
@@ -98,7 +132,7 @@ export async function streamChat(
     }
 
     handlers.onError?.(
-      "Could not reach the server. Is it running on port 5000?",
+      "Could not reach the app server. Start everything with npm run dev.",
       true
     );
     handlers.onDone?.();

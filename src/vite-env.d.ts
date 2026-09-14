@@ -1,7 +1,7 @@
 /// <reference types="vite/client" />
 
 interface ImportMetaEnv {
-  /** Base URL of the Express API. Defaults to http://localhost:5000. */
+  /** Origin of a separately hosted API. Unset in dev: /api is proxied to Express by Vite. */
   readonly VITE_API_BASE?: string
 }
 

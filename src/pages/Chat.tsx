@@ -3,6 +3,8 @@ import { motion } from "framer-motion";
 import { Send, Heart, AlertCircle, ExternalLink } from "lucide-react";
 import { streamChat, fetchCrisisResources, localeHint } from "../services/aiServices";
 import type { ChatMessage, CrisisResource } from "@shared/protocol";
+import ReactMarkdown from "react-markdown";
+import type { Components } from "react-markdown";
 
 interface Message {
   id: string;
@@ -14,6 +16,28 @@ interface Message {
 
 const SYSTEM_PROMPT =
   "You are a kind, empathetic mental health support assistant. Always respond with warmth, emotional intelligence, and evidence-based mental wellness techniques. Never give medical advice or diagnoses.";
+
+// Models answer in markdown. Rendered compactly for a chat bubble: headings
+// become bold lines rather than page-sized titles. react-markdown does not render
+// raw HTML and neutralises unsafe link protocols, so model output cannot inject
+// markup into the page.
+const markdownComponents: Components = {
+  p: ({ children }) => <p className="mb-2 last:mb-0">{children}</p>,
+  ul: ({ children }) => <ul className="list-disc pl-5 mb-2 last:mb-0 space-y-1">{children}</ul>,
+  ol: ({ children }) => <ol className="list-decimal pl-5 mb-2 last:mb-0 space-y-1">{children}</ol>,
+  li: ({ children }) => <li>{children}</li>,
+  strong: ({ children }) => <strong className="font-semibold">{children}</strong>,
+  h1: ({ children }) => <p className="font-semibold mt-2 mb-1">{children}</p>,
+  h2: ({ children }) => <p className="font-semibold mt-2 mb-1">{children}</p>,
+  h3: ({ children }) => <p className="font-semibold mt-2 mb-1">{children}</p>,
+  h4: ({ children }) => <p className="font-semibold mt-2 mb-1">{children}</p>,
+  a: ({ href, children }) => (
+    <a href={href} target="_blank" rel="noreferrer" className="underline">
+      {children}
+    </a>
+  ),
+  code: ({ children }) => <code className="bg-gray-200 rounded px-1">{children}</code>,
+};
 
 const Chat = () => {
   const [messages, setMessages] = useState<Message[]>([
@@ -29,11 +53,15 @@ const Chat = () => {
   const [inputText, setInputText] = useState("");
   const [isTyping, setIsTyping] = useState(false);
   const [resources, setResources] = useState<CrisisResource[]>([]);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
   const controllerRef = useRef<AbortController | null>(null);
 
+  // Scroll only the message list. scrollIntoView also scrolls every ancestor,
+  // including the window, so each streamed token jolted the whole page and
+  // pushed the crisis banner under the header.
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    const el = scrollRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
   }, [messages]);
 
   // Crisis numbers are region-specific and resolved server-side. They used to
@@ -92,7 +120,12 @@ const Chat = () => {
           patch({ text: reply });
         },
         onError: (message) => {
-          patch({ text: `⚠️ ${message}`, isError: true });
+          // Keep any answer text that already arrived; a provider can fail
+          // part-way through a reply.
+          patch({
+            text: reply ? `${reply}\n\n⚠️ ${message}` : `⚠️ ${message}`,
+            isError: true,
+          });
         },
         onDone: () => {
           // An empty reply with no error shouldn't leave a blank bubble behind.
@@ -193,7 +226,7 @@ const Chat = () => {
           className="bg-white rounded-2xl shadow-xl border border-gray-100 overflow-hidden"
         >
           {/* Messages */}
-          <div className="h-96 overflow-y-auto p-6 space-y-4">
+          <div ref={scrollRef} className="h-96 overflow-y-auto p-6 space-y-4">
             {messages.map((message) => (
               <div
                 key={message.id}
@@ -210,9 +243,17 @@ const Chat = () => {
                       : "bg-gray-100 text-gray-800"
                   }`}
                 >
-                  <p className="text-sm leading-relaxed whitespace-pre-line">
-                    {message.text}
-                  </p>
+                  {message.role === "assistant" && !message.isError ? (
+                    <div className="text-sm leading-relaxed">
+                      <ReactMarkdown components={markdownComponents}>
+                        {message.text}
+                      </ReactMarkdown>
+                    </div>
+                  ) : (
+                    <p className="text-sm leading-relaxed whitespace-pre-line">
+                      {message.text}
+                    </p>
+                  )}
                   <p
                     className={`text-xs mt-2 ${
                       message.role === "user"
@@ -246,7 +287,6 @@ const Chat = () => {
                 </div>
               </div>
             )}
-            <div ref={messagesEndRef} />
           </div>
 
           {/* Input */}

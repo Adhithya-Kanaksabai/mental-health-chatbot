@@ -91,13 +91,29 @@ Copy `server/.env.example` to `server/.env` and fill in your key:
 OPENROUTER_API_KEY=your_openrouter_api_key_here
 # Optional:
 # DEFAULT_MODEL=openai/gpt-4o
-# PORT=5000
+# API_PORT=5000            # not PORT, see "Ports" below
 # APP_URL=http://localhost:5173
 # OPENROUTER_URL=...        # point at a local OpenAI-compatible server
 ```
 
 The server refuses to start without a key rather than failing later at request
 time.
+
+### Choosing a model
+
+The default model, `openai/gpt-4o`, is paid: on an OpenRouter account with no
+credit, every message returns a "no remaining credit" error. Either add credit
+at openrouter.ai, or set `DEFAULT_MODEL` in `server/.env` to a free model — any
+ID ending in `:free` from https://openrouter.ai/api/v1/models.
+
+Two things to know about free models before relying on one:
+
+- They are frequently rate-limited or overloaded. The app reports this in the
+  chat ("Rate limited…", "Service temporarily overloaded") rather than failing
+  silently — try again, or switch model.
+- Free endpoints can carry different data-retention and training terms from
+  paid ones. Check the model's page on OpenRouter before sending anything
+  personal through it; this is a mental health app.
 
 ### 3. Run
 
@@ -120,6 +136,23 @@ To run just one half: `npm run dev:web` or `npm run dev:api`.
 | `npm run dev:web` / `dev:api` | Run one half on its own |
 | `npm run build` | Typecheck and build the frontend |
 | `npm run build:api` | Compile the server to `server/dist/` |
+
+### Ports
+
+Open **http://localhost:5173** — that is the app. The Express API listens on
+5000, but the browser never calls it directly: Vite proxies every `/api`
+request to it, so client code contains no backend host or port and needs no
+CORS. Visiting `localhost:5000` directly just returns a short JSON note saying
+what it is.
+
+The API reads `API_PORT`, deliberately not `PORT`. Launchers — including the
+Claude desktop app's Run button — set `PORT` for the frontend dev server, and
+every child process inherits it. When the API read `PORT`, it silently bound
+5173 alongside Vite and left nothing on 5000.
+
+Both halves refuse to start on a taken port rather than drifting to another
+one: Vite via `strictPort`, the API with a message naming the likely cause (a
+second copy still running).
 
 ### A note on module systems
 

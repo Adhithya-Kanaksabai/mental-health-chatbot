@@ -14,7 +14,11 @@ import { resourcesFor, regionFor } from "./safety/resources";
 
 dotenv.config();
 
-const PORT = Number(process.env.PORT ?? 5000);
+// Deliberately API_PORT, not PORT. Launchers (including the desktop app's Run
+// button via .claude/launch.json) set PORT for the frontend dev server, and every
+// child process inherits it - which made this API bind the frontend's port 5173
+// and left nothing listening on 5000.
+const PORT = Number(process.env.API_PORT ?? 5000);
 // Overridable so the pipeline can be tested against a local fake upstream, and
 // so Phase 5 can point it at a local llama.cpp / Ollama OpenAI-compatible server.
 const OPENROUTER_URL =
@@ -81,7 +85,8 @@ function describeUpstream(status: number): { message: string; retryable: boolean
   }
   if (status === 402) {
     return {
-      message: "The AI provider reports no remaining credit on this account.",
+      message:
+        "This OpenRouter account has no credit for the selected model. Add credit at openrouter.ai, or set DEFAULT_MODEL in server/.env to a free model (an ID ending in :free).",
       retryable: false,
     };
   }
@@ -173,6 +178,13 @@ app.post("/api/chat", async (req: Request, res: Response) => {
     const reader = response.body.getReader();
     let upstreamDone = false;
 
+    // Tracked so a stream that ends without an answer is reported, never silent.
+    let frames = 0;
+    let contentChunks = 0;
+    let reasoningChunks = 0;
+    let lastFinishReason: string | null = null;
+    let upstreamError: string | null = null;
+
     while (!upstreamDone) {
       const { value, done } = await reader.read();
       if (done) break;
@@ -193,11 +205,32 @@ app.post("/api/chat", async (req: Request, res: Response) => {
           // OpenRouter interleaves non-JSON keep-alive comments; skip quietly.
           continue;
         }
+        frames++;
 
-        const text: string | undefined = payload.choices?.[0]?.delta?.content;
+        // A provider can fail AFTER the 200 status has been sent, in which case
+        // the failure only exists inside the stream.
+        if (payload.error) {
+          upstreamError =
+            typeof payload.error === "string"
+              ? payload.error
+              : payload.error.message ?? "The AI provider reported an error mid-response.";
+          console.error(`[${requestId}] in-stream error:`, JSON.stringify(payload.error));
+          upstreamDone = true;
+          break;
+        }
+
+        const choice = payload.choices?.[0];
+        if (choice?.finish_reason) lastFinishReason = choice.finish_reason;
+
+        const text: string | undefined = choice?.delta?.content;
         if (text) {
+          contentChunks++;
           if (ttftMs < 0) ttftMs = Date.now() - startedAt;
           send({ type: "delta", text });
+        } else if (choice?.delta?.reasoning) {
+          // Reasoning models think before answering. That text is deliberately
+          // not shown to the user; it is only counted, to explain empty replies.
+          reasoningChunks++;
         }
 
         if (payload.usage) {
@@ -205,6 +238,28 @@ app.post("/api/chat", async (req: Request, res: Response) => {
           completionTokens = payload.usage.completion_tokens ?? 0;
         }
       }
+    }
+
+    if (upstreamError || lastFinishReason === "error") {
+      send({
+        type: "error",
+        message: upstreamError ?? "The AI provider reported an error mid-response.",
+        retryable: true,
+      });
+    } else if (contentChunks === 0) {
+      // A successful-looking stream that carried no answer. Ending quietly here
+      // is exactly the silent empty reply this protocol exists to prevent.
+      console.error(
+        `[${requestId}] empty reply from ${chosenModel}: frames=${frames} reasoningChunks=${reasoningChunks} finish=${lastFinishReason}`
+      );
+      send({
+        type: "error",
+        message:
+          lastFinishReason === "length"
+            ? "The model ran out of room before it could answer. Try again, or use a different model."
+            : "The model returned an empty response. Try again, or use a different model.",
+        retryable: true,
+      });
     }
 
     send({
@@ -245,7 +300,22 @@ app.use((req, res) => {
   res.status(404).json({ error: `No route ${req.method} ${req.path}` });
 });
 
-app.listen(PORT, () => {
-  console.log(`Server listening on http://localhost:${PORT}`);
+// Express 5 passes a listen failure to this callback (it attaches the callback to
+// the server's "error" event), so the error must be checked here - otherwise a
+// port clash would print "listening" and then leave nothing running.
+app.listen(PORT, (err?: Error) => {
+  if (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === "EADDRINUSE") {
+      console.error(
+        `Port ${PORT} is already in use - most likely another copy of this app is still running. Stop it, or set API_PORT in server/.env.`
+      );
+    } else {
+      console.error("API failed to start:", err);
+    }
+    process.exit(1);
+  }
+
+  console.log(`API listening on http://localhost:${PORT}`);
   console.log(`Default model: ${DEFAULT_MODEL}`);
 });
